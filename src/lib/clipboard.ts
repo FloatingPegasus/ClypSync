@@ -1,35 +1,51 @@
-const BLOCK_ELEMENTS = 'address,article,aside,blockquote,dd,div,dl,dt,figcaption,figure,footer,' +
-  'h1,h2,h3,h4,h5,h6,header,hr,li,main,nav,ol,p,pre,section,table,tr,ul';
+import { defaultTreeAdapter, parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
+
+const BLOCK_ELEMENTS = new Set(('address,article,aside,blockquote,dd,div,dl,dt,figcaption,figure,footer,' +
+  'h1,h2,h3,h4,h5,h6,header,hr,li,main,nav,ol,p,pre,section,table,tr,ul').split(','));
+const IGNORED_ELEMENTS = new Set(['script', 'style', 'title', 'template', 'noscript']);
 
 export function htmlToPlainText(html: string): string {
-  // Template content belongs to an inert document with no browsing context.
-  // Never attach these nodes to the page: only the extracted string leaves this function.
-  // https://html.spec.whatwg.org/multipage/scripting.html#appropriate-template-contents-owner-document
-  const template = document.createElement('template');
-  template.innerHTML = html;
-  template.content.querySelectorAll('script,style,title,template,noscript').forEach((node) => node.remove());
+  // Parse into plain data, never browser DOM nodes or an HTML injection sink.
+  const fragment = parseFragment(html);
 
   let text = '';
   const lineBreak = () => {
     if (text && !text.endsWith('\n')) text += '\n';
   };
-  const visit = (node: Node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      text += node.textContent;
-      return;
+  // Use an explicit stack so deeply nested clipboard HTML cannot exhaust the call stack.
+  const pending: (DefaultTreeAdapterTypes.ChildNode | '\n' | '\t')[] = [];
+  const enqueueChildren = (children: DefaultTreeAdapterTypes.ChildNode[]) => {
+    let hasNextElement = false;
+    for (let index = children.length - 1; index >= 0; index--) {
+      const child = children[index];
+      if (defaultTreeAdapter.isElementNode(child)) {
+        if ((child.tagName === 'td' || child.tagName === 'th') && hasNextElement) pending.push('\t');
+        hasNextElement = true;
+      }
+      pending.push(child);
     }
-    if (!(node instanceof Element)) return;
-    if (node.tagName === 'BR') {
-      text += '\n';
-      return;
-    }
-    const isBlock = node.matches(BLOCK_ELEMENTS);
-    if (isBlock) lineBreak();
-    node.childNodes.forEach(visit);
-    if (isBlock) lineBreak();
-    if (node.matches('td,th') && node.nextElementSibling) text += '\t';
   };
-  template.content.childNodes.forEach(visit);
+  enqueueChildren(fragment.childNodes);
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node === '\n') {
+      lineBreak();
+    } else if (node === '\t') {
+      text += '\t';
+    } else if (defaultTreeAdapter.isTextNode(node)) {
+      text += node.value;
+    } else if (defaultTreeAdapter.isElementNode(node) && !IGNORED_ELEMENTS.has(node.tagName)) {
+      if (node.tagName === 'br') {
+        text += '\n';
+        continue;
+      }
+      if (BLOCK_ELEMENTS.has(node.tagName)) {
+        lineBreak();
+        pending.push('\n');
+      }
+      enqueueChildren(node.childNodes);
+    }
+  }
   return text.replace(/^\n+|\n+$/g, '');
 }
 

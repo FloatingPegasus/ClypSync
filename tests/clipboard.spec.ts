@@ -179,6 +179,40 @@ test('HTML fallback keeps block boundaries, inline words, lists, and code', asyn
   expect(text).toContain('  const x = 1;\n  x++;');
 });
 
+for (const { name, html, text } of [
+  {
+    name: 'table cells and Unicode entities',
+    html: '<h2>Résumé &#x1f600;</h2><table><tr><th>Name</th><th>Value</th></tr>' +
+      '<tr><td>α</td><td>2 &lt; 3 &amp; 4 &gt; 1</td></tr></table>',
+    text: 'Résumé 😀\nName\tValue\nα\t2 < 3 & 4 > 1',
+  },
+  {
+    name: 'literal angle brackets',
+    html: '<pre>&lt;script&gt;literal text&lt;/script&gt;\n  keep indentation</pre>',
+    text: '<script>literal text</script>\n  keep indentation',
+  },
+  {
+    name: 'incomplete and misnested formatting tags',
+    html: '<h2><strong>Heading</h2><p>Body <em>words',
+    text: 'Heading\nBody words',
+  },
+  {
+    name: 'deeply nested markup',
+    html: '<div>'.repeat(6000) + '<b>Nested heading</b>' + '</div>'.repeat(6000),
+    text: 'Nested heading',
+  },
+]) {
+  test(`HTML fallback preserves ${name}`, async ({ page }) => {
+    // Bypass native clipboard normalization so the parser receives the original fixture.
+    await input(page).evaluate((element, html) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData('text/html', html);
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
+    }, html);
+    await expect(input(page)).toHaveValue(text);
+  });
+}
+
 test('HTML fallback never mounts pasted markup or includes scripts and styles', async ({ page }) => {
   const requests: string[] = [];
   page.on('request', (request) => {
