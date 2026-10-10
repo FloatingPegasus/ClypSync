@@ -2,7 +2,9 @@ const BLOCK_ELEMENTS = 'address,article,aside,blockquote,dd,div,dl,dt,figcaption
   'h1,h2,h3,h4,h5,h6,header,hr,li,main,nav,ol,p,pre,section,table,tr,ul';
 
 export function htmlToPlainText(html: string): string {
-  // Template content stays inert: never mount clipboard markup or load its resources.
+  // Template content belongs to an inert document with no browsing context.
+  // Never attach these nodes to the page: only the extracted string leaves this function.
+  // https://html.spec.whatwg.org/multipage/scripting.html#appropriate-template-contents-owner-document
   const template = document.createElement('template');
   template.innerHTML = html;
   template.content.querySelectorAll('script,style,title,template,noscript').forEach((node) => node.remove());

@@ -20,6 +20,39 @@ async function writeClipboard(page: Page, data: Record<string, string>, image = 
   }, { data, image });
 }
 
+type PendingClipboard = Clipboard & {
+  pendingReads: number;
+  finishRead: (index: number, html: string) => void;
+};
+
+async function delayClipboardReads(page: Page) {
+  await page.evaluate(() => {
+    const pending: ((html: string) => void)[] = [];
+    Object.defineProperty(navigator, 'clipboard', { value: {
+      readText: async () => '',
+      read: async () => [{
+        types: ['text/html'],
+        getType: async () => ({ text: () => new Promise<string>((resolve) => pending.push(resolve)) }),
+      }],
+      get pendingReads() { return pending.length; },
+      finishRead: (index: number, html: string) => pending[index](html),
+    } });
+  });
+}
+
+async function startClipboardRead(page: Page, count: number) {
+  await page.getByTitle('Paste from clipboard').click();
+  await expect.poll(() => page.evaluate(() => (navigator.clipboard as PendingClipboard).pendingReads)).toBe(count);
+}
+
+async function finishClipboardRead(page: Page, index: number, html: string) {
+  await page.evaluate(({ index, html }) => {
+    (navigator.clipboard as PendingClipboard).finishRead(index, html);
+  }, { index, html });
+  // Let the clipboard promise, React update, and any toast finish before checking the draft.
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+}
+
 test.beforeEach(async ({ page }) => {
   // Use a local API stub; never read or write a real room or storage bucket.
   await page.route('http://127.0.0.1:54321/**', (route) => route.fulfill({
@@ -61,6 +94,53 @@ test('paste button reads HTML-only text', async ({ page }) => {
   await writeClipboard(page, { 'text/html': headingHtml });
   await page.getByTitle('Paste from clipboard').click();
   await expect(input(page)).toHaveValue(headingText);
+});
+
+test('a pending clipboard read cannot overwrite edits, even if the draft returns to its old value', async ({ page }) => {
+  await input(page).fill('Original draft');
+  await delayClipboardReads(page);
+  await startClipboardRead(page, 1);
+  await input(page).fill('Edited draft');
+  await input(page).fill('Original draft');
+  await finishClipboardRead(page, 0, headingHtml);
+  await expect(input(page)).toHaveValue('Original draft');
+  await expect(page.getByText('Pasted from clipboard')).toHaveCount(0);
+});
+
+test('a pending clipboard read cannot overwrite a newer keyboard paste', async ({ page }) => {
+  await delayClipboardReads(page);
+  await startClipboardRead(page, 1);
+  await input(page).evaluate((element) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/html', '<strong>New keyboard paste</strong>');
+    element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
+  });
+  await expect(input(page)).toHaveValue('New keyboard paste');
+  await finishClipboardRead(page, 0, headingHtml);
+  await expect(input(page)).toHaveValue('New keyboard paste');
+});
+
+test('the latest paste-button request wins when reads finish out of order', async ({ page }) => {
+  await delayClipboardReads(page);
+  await startClipboardRead(page, 1);
+  await startClipboardRead(page, 2);
+  await finishClipboardRead(page, 1, '<b>New clipboard</b>');
+  await expect(input(page)).toHaveValue('New clipboard');
+  await finishClipboardRead(page, 0, headingHtml);
+  await expect(input(page)).toHaveValue('New clipboard');
+});
+
+test('submitting a draft invalidates a pending clipboard read', async ({ page }) => {
+  await input(page).fill('Send this draft');
+  await delayClipboardReads(page);
+  await startClipboardRead(page, 1);
+  const request = page.waitForRequest((request) =>
+    request.url().includes('/rest/v1/pastes') && request.method() === 'POST');
+  await page.getByRole('button', { name: 'Send to Cloud' }).click();
+  expect((await request).postDataJSON()).toMatchObject({ content: 'Send this draft', type: 'text' });
+  await expect(input(page)).toHaveValue('');
+  await finishClipboardRead(page, 0, headingHtml);
+  await expect(input(page)).toHaveValue('');
 });
 
 for (const format of ['text/plain', 'text/html']) {
@@ -109,12 +189,16 @@ test('HTML fallback never mounts pasted markup or includes scripts and styles', 
     const clipboardData = new DataTransfer();
     clipboardData.setData('text/html', '<style>.secret { color: red; }</style>' +
       '<script>window.clipboardScriptRan = true</script><h2><b>Safe heading</b></h2>' +
-      '<img src="https://clipboard-resource.invalid/image.png" onerror="window.clipboardScriptRan = true">');
+      '<img src="https://clipboard-resource.invalid/image.png" onerror="window.clipboardScriptRan = true">' +
+      '<svg onload="window.clipboardScriptRan = true"></svg>' +
+      '<iframe src="https://clipboard-resource.invalid/frame" srcdoc="&lt;script&gt;parent.clipboardScriptRan=true&lt;/script&gt;"></iframe>' +
+      '<link rel="stylesheet" href="https://clipboard-resource.invalid/style.css">' +
+      '<template><img src="https://clipboard-resource.invalid/nested.png" onerror="window.clipboardScriptRan=true"></template>');
     element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
   });
   await expect(input(page)).toHaveValue('Safe heading');
   expect(await page.evaluate(() => 'clipboardScriptRan' in window)).toBe(false);
-  await expect(page.locator('img')).toHaveCount(0);
+  await expect(page.locator('img, iframe, template')).toHaveCount(0);
   expect(requests).toEqual([]);
 });
 

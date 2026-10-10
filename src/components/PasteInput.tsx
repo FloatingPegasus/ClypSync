@@ -31,6 +31,7 @@ export function PasteInput({ onSubmit, disabled, roomCode }: PasteInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
+  const clipboardReadVersion = useRef(0);
 
   const handleImageUpload = async (file: File) => {
     setIsSubmitting(true);
@@ -113,6 +114,7 @@ export function PasteInput({ onSubmit, disabled, roomCode }: PasteInputProps) {
   const handleSubmit = async () => {
     if (!content.trim() || isSubmitting || isOverLimit) return;
 
+    clipboardReadVersion.current += 1;
     setIsSubmitting(true);
     try {
       await onSubmit(content.trim(), 'text');
@@ -145,6 +147,7 @@ export function PasteInput({ onSubmit, disabled, roomCode }: PasteInputProps) {
   };
 
   const handleClipboardPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    clipboardReadVersion.current += 1;
     const items = e.clipboardData.items;
     for (const item of items) {
       if (item.type.startsWith('image/')) {
@@ -183,8 +186,11 @@ export function PasteInput({ onSubmit, disabled, roomCode }: PasteInputProps) {
   };
 
   const handlePasteFromClipboard = async () => {
+    // Edits, keyboard pastes, sends, and newer reads invalidate this request.
+    const version = ++clipboardReadVersion.current;
     try {
       const text = await readClipboardText();
+      if (version !== clipboardReadVersion.current) return;
       if (text) {
         setContent(text);
         toast.success('Pasted from clipboard');
@@ -192,6 +198,7 @@ export function PasteInput({ onSubmit, disabled, roomCode }: PasteInputProps) {
         toast.error('Clipboard is empty');
       }
     } catch {
+      if (version !== clipboardReadVersion.current) return;
       toast.error('Could not access clipboard');
     }
   };
@@ -208,7 +215,10 @@ export function PasteInput({ onSubmit, disabled, roomCode }: PasteInputProps) {
         <Textarea
           placeholder="Paste or type text here..."
           value={content}
-          onChange={(e) => setContent(e.target.value)}
+          onChange={(e) => {
+            clipboardReadVersion.current += 1;
+            setContent(e.target.value);
+          }}
           onKeyDown={handleKeyDown}
           onPaste={handleClipboardPaste}
           disabled={disabled || isSubmitting}
