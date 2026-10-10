@@ -14,3 +14,14 @@ A shared clipboard that works across any device. Enter the same 6-digit PIN and 
 - **Room Stats** - See paste count breakdown (text vs images) in the header
 - **Auto-sync** - Real-time updates across all connected devices
 - **Persistent PIN** - Your room PIN is saved locally for quick rejoining
+
+## Clipboard regression tests
+
+```sh
+npm ci
+npx playwright install chromium
+npm test
+```
+
+The browser tests start a local development server with a stubbed Supabase API;
+no real room, credentials, or storage bucket is needed.

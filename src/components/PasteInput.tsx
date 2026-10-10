@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { uploadImage, uploadDocument } from '@/lib/supabase';
+import { htmlToPlainText, readClipboardText } from '@/lib/clipboard';
 
 const MAX_CHARS = 500000;
 
@@ -143,7 +144,7 @@ export function PasteInput({ onSubmit, disabled, roomCode }: PasteInputProps) {
     }
   };
 
-  const handleClipboardPaste = async (e: React.ClipboardEvent) => {
+  const handleClipboardPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData.items;
     for (const item of items) {
       if (item.type.startsWith('image/')) {
@@ -155,6 +156,22 @@ export function PasteInput({ onSubmit, disabled, roomCode }: PasteInputProps) {
         return;
       }
     }
+
+    // Keep native plain-text pastes (and image priority above) unchanged.
+    if (e.clipboardData.getData('text/plain')) return;
+    const html = e.clipboardData.getData('text/html');
+    if (!html) return;
+    const text = htmlToPlainText(html);
+    if (!text) return;
+
+    e.preventDefault();
+    const textarea = e.currentTarget;
+    const { selectionStart, selectionEnd } = textarea;
+    setContent((current) => current.slice(0, selectionStart) + text + current.slice(selectionEnd));
+    requestAnimationFrame(() => {
+      const caret = selectionStart + text.length;
+      textarea.setSelectionRange(caret, caret);
+    });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -167,7 +184,7 @@ export function PasteInput({ onSubmit, disabled, roomCode }: PasteInputProps) {
 
   const handlePasteFromClipboard = async () => {
     try {
-      const text = await navigator.clipboard.readText();
+      const text = await readClipboardText();
       if (text) {
         setContent(text);
         toast.success('Pasted from clipboard');
